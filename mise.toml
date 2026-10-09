@@ -1,0 +1,26 @@
+[tools]
+python = "3.13.16"
+uv = "0.12.23"        # runs the tests with the pinned dependencies
+ruff = "0.16.10"      # Python lint
+actionlint = "1.7.12" # workflow and action correctness
+shellcheck = "0.11.0" # backs actionlint's run: blocks
+zizmor = "1.30.1"     # workflow security audit
+typos = "1.51.1"      # spell check
+
+[tasks.test]
+description = "Run the unit tests"
+run = "uv run --no-project --with-requirements requirements.txt --with pytest==9.1.1 pytest -q"
+
+[tasks.lint]
+description = "Lint the Python code, the workflows, and the spelling"
+run = [
+  "ruff check .",
+  "actionlint",
+  "actionlint examples/sync.yml",
+  "zizmor --offline . examples/sync.yml",
+  "typos",
+]
+
+[tasks.check]
+description = "Lint and test"
+depends = ["lint", "test"]

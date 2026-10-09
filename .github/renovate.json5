@@ -1,0 +1,47 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  // Best practices pin GitHub Actions to commit digests. Renovate also updates
+  // the action pins in action.yml, the tools in mise.toml, and requirements.txt.
+  "extends": [
+    "config:best-practices",
+    "mergeConfidence:all-badges",
+  ],
+  "timezone": "America/New_York",
+  "minimumReleaseAge": "7 days",
+  "internalChecksFilter": "strict",
+  "labels": ["renovate"],
+  "assignees": ["nateships"],
+  // Renovate merges a PR only after the required checks pass. The main branch
+  // ruleset makes the CI check required.
+  "automerge": true,
+  "platformAutomerge": true,
+  "customManagers": [
+    {
+      // The pytest pin in the mise test task.
+      "customType": "regex",
+      "managerFilePatterns": ["/^mise\\.toml$/"],
+      "matchStrings": ["--with pytest==(?<currentValue>\\d+\\.\\d+\\.\\d+)"],
+      "depNameTemplate": "pytest",
+      "datasourceTemplate": "pypi",
+    },
+  ],
+  "packageRules": [
+    {
+      "description": "Major updates: manual review, never automerge",
+      "matchUpdateTypes": ["major"],
+      "automerge": false,
+      "addLabels": ["major-update"],
+    },
+    {
+      "description": "The action runtime and the dev tools use the same Python minor version; change it by hand",
+      "matchDepNames": ["python"],
+      "matchUpdateTypes": ["minor"],
+      "enabled": false,
+    },
+    {
+      "description": "Slow-moving tools that are not abandoned",
+      "matchDepNames": ["shellcheck"],
+      "abandonmentThreshold": null,
+    },
+  ],
+}

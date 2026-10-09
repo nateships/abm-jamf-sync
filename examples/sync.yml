@@ -1,0 +1,50 @@
+# Copy this file to .github/workflows/abm-jamf-sync.yml in a PRIVATE repository.
+# The job log and the step summary show serial numbers and order numbers.
+#
+# Secrets and variables live in the "jamf" environment (Settings > Environments).
+# Add required reviewers or a branch rule there to control who can run a write.
+
+name: ABM to Jamf sync
+
+on:
+  schedule:
+    - cron: "17 6 * * *" # every day at 06:17 UTC
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: Log the planned changes only
+        type: boolean
+        default: true
+      serials:
+        description: Optional. Only these serial numbers (comma separated)
+        type: string
+        default: ""
+
+permissions: {}
+
+concurrency:
+  group: abm-jamf-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    environment: jamf
+    timeout-minutes: 60
+    steps:
+      # Pin to the commit SHA of a release tag in production.
+      - uses: nateships/abm-jamf-sync@v1 # zizmor: ignore[unpinned-uses]
+        with:
+          jamf-url: ${{ vars.JAMF_URL }}
+          jamf-client-id: ${{ secrets.JAMF_CLIENT_ID }}
+          jamf-client-secret: ${{ secrets.JAMF_CLIENT_SECRET }}
+          axm-client-id: ${{ secrets.AXM_CLIENT_ID }}
+          axm-key-id: ${{ secrets.AXM_KEY_ID }}
+          axm-private-key: ${{ secrets.AXM_PRIVATE_KEY }}
+          # Scheduled runs use the DRY_RUN variable. Set it to false when you trust the output.
+          # format() makes a false input a non-empty string, so the || fallback does not replace it.
+          dry-run: ${{ github.event_name == 'workflow_dispatch' && format('{0}', inputs.dry-run) || vars.DRY_RUN || 'true' }}
+          serials: ${{ inputs.serials || '' }}
+          device-types: computers # add ,mobile when the Jamf API role can read and update mobile devices
+          vendor-map: ${{ vars.VENDOR_MAP || '{}' }}
+          warranty-ea-name: ${{ vars.WARRANTY_EA_NAME || '' }}

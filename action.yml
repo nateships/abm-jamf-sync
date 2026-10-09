@@ -1,0 +1,115 @@
+name: ABM to Jamf Purchasing Sync
+description: Sync order and AppleCare data from Apple Business Manager or Apple School Manager into Jamf Pro purchasing fields.
+author: nateships
+branding:
+  icon: refresh-cw
+  color: blue
+
+inputs:
+  jamf-url:
+    description: Jamf Pro URL, for example https://example.jamfcloud.com
+    required: true
+  jamf-client-id:
+    description: Jamf Pro API client ID.
+    required: true
+  jamf-client-secret:
+    description: Jamf Pro API client secret.
+    required: true
+  axm-client-id:
+    description: Apple Business Manager or Apple School Manager API client ID (BUSINESSAPI.… or SCHOOLAPI.…).
+    required: true
+  axm-key-id:
+    description: Key ID of the API account private key.
+    required: true
+  axm-private-key:
+    description: Contents of the API account private key (PEM).
+    required: true
+  axm-scope:
+    description: business for Apple Business Manager, school for Apple School Manager.
+    default: business
+  dry-run:
+    description: When true, log the planned changes and write nothing to Jamf Pro.
+    default: "true"
+  fields:
+    description: Purchasing fields that the sync manages. Choose from purchased, poNumber, poDate, vendor, warrantyDate, appleCareId.
+    default: poNumber,poDate,vendor,warrantyDate,appleCareId
+  device-types:
+    description: Jamf device types to sync. Choose from computers, mobile.
+    default: computers
+  vendor-map:
+    description: JSON object that maps an ABM purchaseSourceUid to a vendor name. Apple purchases always get the vendor "Apple".
+    default: "{}"
+  warranty-ea-name:
+    description: Optional. Name of a computer extension attribute with a warranty date. The sync uses it for computers that are not in ABM.
+    default: ""
+  serials:
+    description: Optional. Sync only these serial numbers (comma or newline separated). Use it to test on one device.
+    default: ""
+  fail-on-error:
+    description: Fail the step when one or more device updates fail.
+    default: "true"
+
+outputs:
+  jamf-devices:
+    description: Number of Jamf devices in scope.
+    value: ${{ steps.sync.outputs.jamf-devices }}
+  matched-abm:
+    description: Devices found in ABM.
+    value: ${{ steps.sync.outputs.matched-abm }}
+  matched-ea:
+    description: Computers that got data from the warranty extension attribute.
+    value: ${{ steps.sync.outputs.matched-ea }}
+  no-data:
+    description: Devices with no data from ABM or the extension attribute.
+    value: ${{ steps.sync.outputs.no-data }}
+  unsupported:
+    description: Mobile devices that Jamf cannot update through this API (watchOS, visionOS).
+    value: ${{ steps.sync.outputs.unsupported }}
+  unchanged:
+    description: Devices that were already correct.
+    value: ${{ steps.sync.outputs.unchanged }}
+  changed:
+    description: Devices with changes (planned in a dry run).
+    value: ${{ steps.sync.outputs.changed }}
+  errors:
+    description: Devices that failed to update.
+    value: ${{ steps.sync.outputs.errors }}
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+      with:
+        python-version: "3.13"
+        update-environment: false
+      id: python
+
+    - name: Install dependencies
+      shell: bash
+      env:
+        PYTHON_BIN: ${{ steps.python.outputs.python-path }}
+      run: |
+        "$PYTHON_BIN" -m venv "$RUNNER_TEMP/abm-jamf-sync-venv"
+        "$RUNNER_TEMP/abm-jamf-sync-venv/bin/pip" install --quiet --disable-pip-version-check \
+          -r "$GITHUB_ACTION_PATH/requirements.txt"
+
+    - name: Sync
+      id: sync
+      shell: bash
+      env:
+        JAMF_URL: ${{ inputs.jamf-url }}
+        JAMF_CLIENT_ID: ${{ inputs.jamf-client-id }}
+        JAMF_CLIENT_SECRET: ${{ inputs.jamf-client-secret }}
+        AXM_CLIENT_ID: ${{ inputs.axm-client-id }}
+        AXM_KEY_ID: ${{ inputs.axm-key-id }}
+        AXM_PRIVATE_KEY: ${{ inputs.axm-private-key }}
+        AXM_SCOPE: ${{ inputs.axm-scope }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        FIELDS: ${{ inputs.fields }}
+        DEVICE_TYPES: ${{ inputs.device-types }}
+        VENDOR_MAP: ${{ inputs.vendor-map }}
+        WARRANTY_EA_NAME: ${{ inputs.warranty-ea-name }}
+        SERIALS: ${{ inputs.serials }}
+        FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
+      run: '"$RUNNER_TEMP/abm-jamf-sync-venv/bin/python" "$GITHUB_ACTION_PATH/src/abm_jamf_sync.py"'
