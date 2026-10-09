@@ -32,8 +32,7 @@ jobs:
     environment: jamf
     timeout-minutes: 60
     steps:
-      # Pin to the commit SHA of a release tag in production.
-      - uses: nateships/abm-jamf-sync@v1 # zizmor: ignore[unpinned-uses]
+      - uses: nateships/abm-jamf-sync@d26673f929cd5248561256abf7a9100e9e8df62e # v1.0.0
         with:
           jamf-url: ${{ vars.JAMF_URL }}
           jamf-client-id: ${{ secrets.JAMF_CLIENT_ID }}
