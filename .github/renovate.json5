@@ -15,6 +15,10 @@
   // ruleset makes the CI check required.
   "automerge": true,
   "platformAutomerge": true,
+  // Keep the action pin in the example caller workflow current.
+  "github-actions": {
+    "managerFilePatterns": ["/^examples/.+\\.ya?ml$/"],
+  },
   "customManagers": [
     {
       // The pytest pin in the mise test task.
