@@ -70,9 +70,9 @@ def test_pick_agreement():
 def test_vendor_name():
     vendor_map = {"-2085650007946880": "Example Reseller"}
     assert sync.vendor_name({"purchaseSourceType": "APPLE"}, vendor_map) == "Apple"
-    assert sync.vendor_name({"purchaseSourceType": "RESELLER", "purchaseSourceUid": "-2085650007946880"},
+    assert sync.vendor_name({"purchaseSourceType": "RESELLER", "purchaseSourceId": "-2085650007946880"},
                             vendor_map) == "Example Reseller"
-    assert sync.vendor_name({"purchaseSourceType": "RESELLER", "purchaseSourceUid": "999"}, vendor_map) is None
+    assert sync.vendor_name({"purchaseSourceType": "RESELLER", "purchaseSourceId": "999"}, vendor_map) is None
     assert sync.vendor_name({"purchaseSourceType": "MANUALLY_ADDED"}, vendor_map) is None
 
 
@@ -173,13 +173,13 @@ class FakeServers:
         ]
         self.abm = {
             "C02ABM00001": {"orderNumber": "1234567890", "orderDateTime": "2025-01-15T07:00:00Z",
-                            "purchaseSourceType": "APPLE", "purchaseSourceUid": "1"},
+                            "purchaseSourceType": "APPLE", "purchaseSourceId": "1"},
             "C02ABM00002": {"orderNumber": "2234567890", "orderDateTime": "2025-02-15T07:00:00Z",
-                            "purchaseSourceType": "RESELLER", "purchaseSourceUid": "-2085650007946880"},
+                            "purchaseSourceType": "RESELLER", "purchaseSourceId": "-2085650007946880"},
             "IPADABM0010": {"orderNumber": "3234567890", "orderDateTime": "2025-03-15T07:00:00Z",
-                            "purchaseSourceType": "APPLE", "purchaseSourceUid": "1"},
+                            "purchaseSourceType": "APPLE", "purchaseSourceId": "1"},
             "WATCHABM011": {"orderNumber": "4234567890", "orderDateTime": "2025-03-15T07:00:00Z",
-                            "purchaseSourceType": "APPLE", "purchaseSourceUid": "1"},
+                            "purchaseSourceType": "APPLE", "purchaseSourceId": "1"},
         }
         self.coverage = {"C02ABM00001": DOC_COVERAGE, "IPADABM0010": DOC_COVERAGE[:1]}
         self.jamf_tokens = 0
@@ -403,8 +403,8 @@ def test_ea_does_not_replace_abm_coverage(servers):
 
 
 def test_unknown_reseller_is_logged_once(servers):
-    servers.abm["C02ABM00001"].update(purchaseSourceType="RESELLER", purchaseSourceUid="777")
-    servers.abm["IPADABM0010"].update(purchaseSourceType="RESELLER", purchaseSourceUid="777")
+    servers.abm["C02ABM00001"].update(purchaseSourceType="RESELLER", purchaseSourceId="777")
+    servers.abm["IPADABM0010"].update(purchaseSourceType="RESELLER", purchaseSourceId="777")
     report, logs = make_run(servers)
     notes = [line for line in logs if "reseller 777 is not in vendor-map" in line]
     assert len(notes) == 1

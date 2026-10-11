@@ -65,7 +65,7 @@ The ABM API returns only the devices in your organization. For a Mac that is not
 | `dry-run` | `true` | Log the changes and write nothing |
 | `fields` | `poNumber,poDate,vendor,warrantyDate,appleCareId` | Fields that the sync manages. Also available: `purchased` |
 | `device-types` | `computers` | Jamf device types to sync: `computers`, `mobile`, or `computers,mobile`. Mobile needs the mobile device privileges. |
-| `vendor-map` | `{}` | JSON that maps an ABM `purchaseSourceUid` to a vendor name |
+| `vendor-map` | `{}` | JSON that maps an ABM `purchaseSourceId` to a vendor name |
 | `warranty-ea-name` | | Computer extension attribute with a warranty date, for Macs not in ABM |
 | `serials` | | Only these serial numbers |
 | `fail-on-error` | `true` | Fail the step when a device update fails |
@@ -74,7 +74,7 @@ Outputs: `jamf-devices`, `matched-abm`, `matched-ea`, `no-data`, `unsupported`, 
 
 ### Vendor map
 
-ABM identifies a reseller only by an ID (`purchaseSourceUid`). The sync skips the Vendor field for a reseller that is not in the map. To find the ID, call the ABM API for one device from that reseller, then map it:
+ABM identifies a reseller only by its Reseller Number (`purchaseSourceId`). The sync skips the Vendor field for a reseller that is not in the map. A dry run logs each unknown Reseller Number with a sample serial number. Map each number to a name:
 
 ```json
 {"-2085650007946880": "Example Reseller"}

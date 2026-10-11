@@ -300,7 +300,7 @@ def vendor_name(device: dict, vendor_map: dict[str, str]) -> str | None:
     if source == "APPLE":
         return "Apple"
     if source == "RESELLER":
-        return vendor_map.get(str(device.get("purchaseSourceUid") or ""))
+        return vendor_map.get(str(device.get("purchaseSourceId") or ""))
     return None
 
 
@@ -489,7 +489,7 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                     coverage_cache[r["serial"]] = axm.coverage(device["id"])
                 desired = desired_from_abm(device, coverage_cache[r["serial"]], cfg.vendor_map)
                 report.counts["matched_abm"] += 1
-                uid = str(device.get("purchaseSourceUid") or "")
+                uid = str(device.get("purchaseSourceId") or "")
                 if device.get("purchaseSourceType") == "RESELLER" and uid not in cfg.vendor_map \
                         and uid not in unknown_resellers:
                     unknown_resellers.add(uid)
