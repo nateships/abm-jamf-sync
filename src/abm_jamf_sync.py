@@ -37,6 +37,19 @@ FIELD_NAMES = {
     "appleCareId": ("appleCareId", "appleCareId"),
 }
 DATE_FIELDS = {"poDate", "warrantyDate"}
+# Display names for the log and the step summary, in Jamf field name order.
+FIELD_LABELS = {
+    "purchased": "Purchased", "poNumber": "PO Number", "poDate": "PO Date", "vendor": "Vendor",
+    "warrantyDate": "Warranty Expiration", "appleCareId": "AppleCare ID",
+}
+JAMF_LABELS = {jamf: FIELD_LABELS[logical] for logical, names in FIELD_NAMES.items() for jamf in names}
+JAMF_LOGICAL = {jamf: logical for logical, names in FIELD_NAMES.items() for jamf in names}
+JAMF_DATE_FIELDS = {jamf for logical in DATE_FIELDS for jamf in FIELD_NAMES[logical]}
+COUNT_LABELS = {
+    "jamf_devices": "Jamf devices", "matched_abm": "Found in ABM", "matched_ea": "From extension attribute",
+    "no_data": "No data", "unsupported": "Unsupported", "unchanged": "Already correct",
+    "changed": "Changed", "errors": "Errors",
+}
 DEFAULT_FIELDS = "poNumber,poDate,vendor,warrantyDate,appleCareId"
 MOBILE_PATCH_KEYS = {"iOS": "ios", "tvOS": "tvos"}
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
@@ -94,6 +107,12 @@ def mask(value: str) -> None:
     """Tell GitHub Actions to hide a value in the logs."""
     if value and os.environ.get("GITHUB_ACTIONS") == "true":
         print(f"::add-mask::{value}", flush=True)
+
+
+def annotation(level: str, title: str, message: str) -> str:
+    """Return a workflow command that shows the message on the run page (level: warning or error)."""
+    data = message.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::{level} title={title}::{data}"
 
 
 class BearerClient:
@@ -382,8 +401,11 @@ class Report:
         "jamf_devices": 0, "matched_abm": 0, "matched_ea": 0, "no_data": 0, "unsupported": 0,
         "unchanged": 0, "changed": 0, "errors": 0,
     })
-    changes: list[tuple[str, str, str, dict]] = field(default_factory=list)
+    # Serial, kind, Jamf ID, new values, and the Jamf values before the change.
+    changes: list[tuple[str, str, str, dict, dict]] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    no_data: list[str] = field(default_factory=list)
 
 
 def split_list(value: str) -> list[str]:
@@ -471,7 +493,9 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
         seen[r["serial"]] = seen.get(r["serial"], 0) + 1
     for serial, count in sorted(seen.items()):
         if count > 1:
-            log(f"warning: serial {serial} is on {count} Jamf records. Every record gets the same data.")
+            note = f"Serial {serial} is on {count} Jamf records. Every record gets the same data."
+            report.notes.append(note)
+            log(annotation("warning", "Duplicate serial number", note))
 
     abm_devices = axm.devices()
     coverage_cache: dict[str, list[dict]] = {}
@@ -493,8 +517,10 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                 if device.get("purchaseSourceType") == "RESELLER" and uid not in cfg.vendor_map \
                         and uid not in unknown_resellers:
                     unknown_resellers.add(uid)
-                    log(f"note: reseller {uid} is not in vendor-map, so the sync does not set Vendor "
-                        f"(first seen on {r['serial']}).")
+                    note = (f"Vendor not set: reseller {uid} is not in vendor-map "
+                            f"(first seen on {r['serial']}).")
+                    report.notes.append(note)
+                    log(annotation("warning", "Unknown reseller", note))
                 # ABM has no coverage date for some devices, for example devices added with Apple Configurator.
                 if "warrantyDate" not in desired and r["kind"] == "computer" and cfg.warranty_ea_name:
                     desired.update(desired_from_ea(r["raw"], cfg.warranty_ea_name))
@@ -502,10 +528,12 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                 desired = desired_from_ea(r["raw"], cfg.warranty_ea_name)
                 if not desired:
                     report.counts["no_data"] += 1
+                    report.no_data.append(r["serial"])
                     continue
                 report.counts["matched_ea"] += 1
             else:
                 report.counts["no_data"] += 1
+                report.no_data.append(r["serial"])
                 continue
 
             changes = plan_changes(desired, r["purchasing"], r["kind"], cfg.fields)
@@ -513,8 +541,9 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                 report.counts["unchanged"] += 1
                 continue
             report.counts["changed"] += 1
-            report.changes.append((r["serial"], r["kind"], r["id"], changes))
-            log(f"{'plan' if cfg.dry_run else 'update'} {label}: {json.dumps(changes, sort_keys=True)}")
+            before = {name: r["purchasing"].get(name) for name in changes}
+            report.changes.append((r["serial"], r["kind"], r["id"], changes, before))
+            log(format_change("Plan" if cfg.dry_run else "Update", label, changes, before))
             if not cfg.dry_run:
                 if r["kind"] == "computer":
                     jamf.update_computer(r["id"], changes)
@@ -523,33 +552,117 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
         except HttpError as err:
             report.counts["errors"] += 1
             report.errors.append(f"{label}: {err}")
-            log(f"error: {label}: {err}")
+            log(annotation("error", "Update failed", f"{label}: {err}"))
     return report
 
 
-def write_github_outputs(report: Report, dry_run: bool) -> None:
+# --------------------------------------------------------------------------
+# Output
+# --------------------------------------------------------------------------
+
+
+def show(jamf_name: str, value: Any) -> str:
+    """Return a Jamf field value as text for people."""
+    if value is None or value == "":
+        return "(empty)"
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if jamf_name in JAMF_DATE_FIELDS:
+        return to_date(value) or str(value)
+    return str(value)
+
+
+def ordered(changes: dict) -> list[str]:
+    """Return the changed Jamf field names in display order."""
+    return [name for name in JAMF_LABELS if name in changes]
+
+
+def format_change(verb: str, label: str, changes: dict, before: dict) -> str:
+    """Return a log block that shows each changed field as before → after."""
+    width = max(len(text) for text in FIELD_LABELS.values())
+    lines = [f"{verb} {label}"]
+    for name in ordered(changes):
+        lines.append(f"    {JAMF_LABELS[name]:<{width}}  {show(name, before.get(name))} → {show(name, changes[name])}")
+    return "\n".join(lines)
+
+
+def format_counts(report: Report, dry_run: bool) -> str:
+    """Return the result counts as an aligned table for the log."""
+    labels = dict(COUNT_LABELS, changed="Changes planned" if dry_run else "Changed")
+    width = max(len(text) for text in labels.values())
+    return "\n".join(["Result"] + [f"    {labels[key]:<{width}}  {value}" for key, value in report.counts.items()])
+
+
+def cell(text: str) -> str:
+    """Escape text for a Markdown table cell."""
+    return text.replace("|", "\\|").replace("\n", " ")
+
+
+def device_link(jamf_url: str, kind: str, device_id: str) -> str:
+    page = "computers.html" if kind == "computer" else "mobileDevices.html"
+    text = f"{kind} {device_id}"
+    return f"[{text}]({jamf_url.rstrip('/')}/{page}?id={device_id}&o=r)" if jamf_url else text
+
+
+def summary_markdown(report: Report, dry_run: bool, jamf_url: str = "") -> str:
+    """Return the step summary: the mode, the counts, the changes, and the notes."""
+    lines = ["## ABM to Jamf purchasing sync", ""]
+    if dry_run:
+        lines += ["> [!NOTE]", "> **Dry run.** Nothing was written to Jamf Pro. These are the planned changes."]
+    else:
+        lines += ["> [!IMPORTANT]", "> **Write mode.** The changes below were written to Jamf Pro."]
+
+    labels = dict(COUNT_LABELS, changed="Changes planned" if dry_run else "Changed")
+    lines += ["", "| " + " | ".join(labels[key] for key in report.counts) + " |",
+              "|" + "---:|" * len(report.counts),
+              "| " + " | ".join(str(value) for value in report.counts.values()) + " |"]
+
+    if report.changes:
+        # One column for each logical field. Computers and mobile devices can use different Jamf names.
+        columns = [logical for logical in FIELD_NAMES
+                   if any(JAMF_LOGICAL[name] == logical for c in report.changes for name in c[3])]
+        title = "Planned changes" if dry_run else "Changes written"
+        lines += ["", f"### {title} ({len(report.changes)})", "",
+                  "| Serial | Jamf device | " + " | ".join(FIELD_LABELS[logical] for logical in columns) + " |",
+                  "|---|---|" + "---|" * len(columns)]
+        for serial, kind, device_id, changes, before in report.changes[:500]:
+            names = {JAMF_LOGICAL[name]: name for name in changes}
+            values = []
+            for logical in columns:
+                name = names.get(logical)
+                if name is None:
+                    values.append("")
+                elif before.get(name) in (None, ""):
+                    values.append(f"**{cell(show(name, changes[name]))}**")
+                else:
+                    values.append(f"{cell(show(name, before[name]))} → **{cell(show(name, changes[name]))}**")
+            lines.append(f"| `{serial}` | {device_link(jamf_url, kind, device_id)} | " + " | ".join(values) + " |")
+        if len(report.changes) > 500:
+            lines += ["", f"{len(report.changes) - 500} more changes are in the job log."]
+        lines += ["", "Bold is the new value. A blank cell is a field that does not change."]
+
+    if report.errors:
+        lines += ["", "### Errors", "", "> [!CAUTION]"] + [f"> - {cell(e)}" for e in report.errors[:100]]
+    if report.notes:
+        lines += ["", "### Notes", "", "> [!WARNING]"] + [f"> - {cell(n)}" for n in report.notes]
+    if report.no_data:
+        lines += ["", f"<details><summary>No data from ABM or the extension attribute "
+                  f"({len(report.no_data)})</summary>", ""]
+        lines += [f"- `{serial}`" for serial in report.no_data[:500]]
+        lines += ["", "</details>"]
+    return "\n".join(lines) + "\n"
+
+
+def write_github_outputs(report: Report, dry_run: bool, jamf_url: str = "") -> None:
     output_path = os.environ.get("GITHUB_OUTPUT")
     if output_path:
         with open(output_path, "a", encoding="utf-8") as out:
             for key, value in report.counts.items():
                 out.write(f"{key.replace('_', '-')}={value}\n")
     summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
-    if not summary_path:
-        return
-    lines = [f"## ABM to Jamf sync ({'dry run' if dry_run else 'write'})", "", "| Result | Count |", "|---|---|"]
-    lines += [f"| {key.replace('_', ' ')} | {value} |" for key, value in report.counts.items()]
-    if report.changes:
-        verb = "Planned" if dry_run else "Applied"
-        lines += ["", f"### {verb} changes", "", "| Serial | Type | Jamf ID | Fields |", "|---|---|---|---|"]
-        for serial, kind, device_id, changes in report.changes[:500]:
-            fields = ", ".join(f"`{k}` = {v}" for k, v in sorted(changes.items()))
-            lines.append(f"| {serial} | {kind} | {device_id} | {fields} |")
-        if len(report.changes) > 500:
-            lines.append(f"\n{len(report.changes) - 500} more changes are in the job log.")
-    if report.errors:
-        lines += ["", "### Errors", ""] + [f"- {e}" for e in report.errors[:100]]
-    with open(summary_path, "a", encoding="utf-8") as out:
-        out.write("\n".join(lines) + "\n")
+    if summary_path:
+        with open(summary_path, "a", encoding="utf-8") as out:
+            out.write(summary_markdown(report, dry_run, jamf_url))
 
 
 def main() -> int:
@@ -557,15 +670,21 @@ def main() -> int:
     mask(cfg.jamf_client_secret)
     jamf = JamfClient(cfg.jamf_url, cfg.jamf_client_id, cfg.jamf_client_secret)
     axm = AxmClient(cfg.axm_client_id, cfg.axm_key_id, cfg.axm_private_key, cfg.axm_scope)
-    mode = "dry run: no changes are written" if cfg.dry_run else "write mode"
-    print(f"Sync from Apple {cfg.axm_scope.title()} Manager to {cfg.jamf_url} ({mode})", flush=True)
+    mode = "Dry run (no changes are written)" if cfg.dry_run else "Write"
+    print("\n".join([
+        "ABM to Jamf purchasing sync",
+        f"    Source  Apple {cfg.axm_scope.title()} Manager",
+        f"    Target  {cfg.jamf_url}",
+        f"    Mode    {mode}",
+        "",
+    ]), flush=True)
     try:
-        report = run(cfg, jamf, axm)
+        report = run(cfg, jamf, axm, log=lambda line: print(line, flush=True))
     except HttpError as err:
-        print(f"::error::Sync stopped: {err}", flush=True)
+        print(annotation("error", "Sync stopped", str(err)), flush=True)
         return 1
-    print("Result: " + ", ".join(f"{k}={v}" for k, v in report.counts.items()), flush=True)
-    write_github_outputs(report, cfg.dry_run)
+    print("\n" + format_counts(report, cfg.dry_run), flush=True)
+    write_github_outputs(report, cfg.dry_run, cfg.jamf_url)
     if report.errors and cfg.fail_on_error:
         return 1
     return 0

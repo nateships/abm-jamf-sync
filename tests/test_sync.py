@@ -297,7 +297,7 @@ def test_dry_run_plans_but_does_not_write(servers):
     assert servers.patches == []
     assert report.counts == {"jamf_devices": 6, "matched_abm": 3, "matched_ea": 1, "no_data": 1,
                              "unsupported": 1, "unchanged": 0, "changed": 4, "errors": 0}
-    planned = {(kind, device_id): changes for _, kind, device_id, changes in report.changes}
+    planned = {(kind, device_id): changes for _, kind, device_id, changes, _ in report.changes}
     assert planned[("computer", "1")] == {"poNumber": "1234567890", "poDate": "2025-01-15", "vendor": "Apple",
                                           "warrantyDate": "2026-04-17", "appleCareId": "0000000001"}
     assert planned[("computer", "2")] == {"poNumber": "2234567890", "poDate": "2025-02-15",
@@ -335,7 +335,7 @@ def test_coverage_is_only_fetched_for_devices_in_jamf(servers):
 def test_serials_filter(servers):
     report, _ = make_run(servers, serials={"C02ABM00002"})
     assert report.counts["jamf_devices"] == 1
-    assert [device_id for _, _, device_id, _ in report.changes] == ["2"]
+    assert [device_id for _, _, device_id, _, _ in report.changes] == ["2"]
 
 
 def test_jamf_401_refreshes_token_once(servers):
@@ -357,7 +357,7 @@ def test_duplicate_serials_are_logged(servers):
                               "extensionAttributes": []})
     report, logs = make_run(servers)
     assert any("C02ABM00001 is on 2 Jamf records" in line for line in logs)
-    assert ("computer", "5") in {(kind, device_id) for _, kind, device_id, _ in report.changes}
+    assert ("computer", "5") in {(kind, device_id) for _, kind, device_id, _, _ in report.changes}
 
 
 def test_patch_error_is_counted_and_run_continues(servers, monkeypatch):
@@ -386,11 +386,37 @@ def test_github_outputs(servers, tmp_path, monkeypatch):
     assert "Planned changes" in summary.read_text()
 
 
+def test_summary_shows_before_and_after(servers):
+    servers.computers[0]["purchasing"]["poNumber"] = "OLD-1"
+    report, _ = make_run(servers)
+    text = sync.summary_markdown(report, dry_run=True, jamf_url=JAMF + "/")
+    assert "> **Dry run.**" in text
+    assert "| PO Number |" in text
+    assert "OLD-1 → **" in text
+    assert f"]({JAMF}/computers.html?id=1&o=r)" in text
+    assert "No data from ABM or the extension attribute (1)" in text
+    assert text.count("| Warranty Expiration |") == 1
+
+
+def test_change_log_is_readable():
+    block = sync.format_change("Plan", "computer 2 (SERIAL)", {"poNumber": "PO-9", "warrantyDate": "2028-09-08"},
+                               {"poNumber": None, "warrantyDate": "2027-01-01"})
+    assert block.splitlines() == [
+        "Plan computer 2 (SERIAL)",
+        "    PO Number            (empty) → PO-9",
+        "    Warranty Expiration  2027-01-01 → 2028-09-08",
+    ]
+
+
+def test_annotation_escapes_new_lines():
+    assert sync.annotation("error", "Update failed", "a\nb 100%") == "::error title=Update failed::a%0Ab 100%25"
+
+
 def test_ea_fills_warranty_for_abm_device_without_coverage(servers):
     servers.computers[1]["purchasing"]["extensionAttributes"] = [
         {"name": "AppleCare Expiration", "values": ["2028-01-31 10:00:00"]}]
     report, _ = make_run(servers, device_types=["computers"])
-    planned = {device_id: changes for _, _, device_id, changes in report.changes}
+    planned = {device_id: changes for _, _, device_id, changes, _ in report.changes}
     assert planned["2"]["warrantyDate"] == "2028-01-31"
     assert planned["2"]["poNumber"] == "2234567890"
 
@@ -398,7 +424,7 @@ def test_ea_fills_warranty_for_abm_device_without_coverage(servers):
 def test_ea_does_not_replace_abm_coverage(servers):
     servers.computers[0]["extensionAttributes"] = [{"name": "AppleCare Expiration", "values": ["2030-01-01"]}]
     report, _ = make_run(servers, device_types=["computers"])
-    planned = {device_id: changes for _, _, device_id, changes in report.changes}
+    planned = {device_id: changes for _, _, device_id, changes, _ in report.changes}
     assert planned["1"]["warrantyDate"] == "2026-04-17"
 
 
@@ -408,7 +434,7 @@ def test_unknown_reseller_is_logged_once(servers):
     report, logs = make_run(servers)
     notes = [line for line in logs if "reseller 777 is not in vendor-map" in line]
     assert len(notes) == 1
-    planned = {device_id: changes for _, _, device_id, changes in report.changes}
+    planned = {device_id: changes for _, _, device_id, changes, _ in report.changes}
     assert "vendor" not in planned["1"]
 
 
