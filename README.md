@@ -11,7 +11,7 @@ A GitHub Action that copies order and AppleCare data from **Apple Business Manag
 
 | Jamf field | Source in ABM |
 |---|---|
-| PO Number | `orderNumber` (the Apple or reseller order number) |
+| PO Number | `orderNumber` (the Apple or reseller order number). Not set for a device added with Apple Configurator, because its order number is an ID for the add |
 | PO Date | `orderDateTime`. For a device added with Apple Configurator, the start date of its earliest coverage (the purchase date), because `orderDateTime` is the date the device was added |
 | Vendor | `Apple` for Apple purchases. For reseller purchases, the name from `vendor-map`. |
 | Warranty Expiration | Latest end date of the coverage that is not canceled |

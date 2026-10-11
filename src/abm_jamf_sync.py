@@ -349,14 +349,15 @@ def purchase_source(device: dict) -> str:
 def desired_from_abm(device: dict, coverages: list[dict], vendor_map: dict[str, str]) -> dict[str, Any]:
     """Return the logical field values that ABM supplies for a device. Leave out empty values."""
     # For a device added with Apple Configurator, orderDateTime is the date it was added, which can be
-    # years after the purchase. The warranty start date is closer to the purchase date.
+    # years after the purchase, and orderNumber is an ID for the add, not a purchase order.
+    # The warranty start date is closer to the purchase date.
     if device.get("purchaseSourceType") == "MANUALLY_ADDED":
-        po_date = pick_warranty_start(coverages)
+        po_number, po_date = None, pick_warranty_start(coverages)
     else:
-        po_date = to_date(device.get("orderDateTime"))
+        po_number, po_date = device.get("orderNumber") or None, to_date(device.get("orderDateTime"))
     values = {
         "purchased": True if device.get("purchaseSourceType") in ("APPLE", "RESELLER") else None,
-        "poNumber": device.get("orderNumber") or None,
+        "poNumber": po_number,
         "poDate": po_date,
         "vendor": vendor_name(device, vendor_map),
         "warrantyDate": pick_warranty_end(coverages),

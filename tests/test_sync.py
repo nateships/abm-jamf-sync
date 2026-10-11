@@ -85,7 +85,11 @@ def test_manually_added_device_uses_warranty_start_as_po_date():
     # Apple Configurator adds a device years after purchase. orderDateTime is the date it was added.
     device = {"purchaseSourceType": "MANUALLY_ADDED", "orderNumber": "CE-2026-09-22-06-18-59-937",
               "orderDateTime": "2026-09-22T06:18:59Z", "addedToOrgDateTime": "2026-09-22T06:18:59Z"}
-    assert sync.desired_from_abm(device, DOC_COVERAGE, {})["poDate"] == "2025-02-02"
+    desired = sync.desired_from_abm(device, DOC_COVERAGE, {})
+    assert desired["poDate"] == "2025-02-02"
+    # The CE- order number is an ID for the add, not a purchase order.
+    assert "poNumber" not in desired
+    assert "vendor" not in desired
     assert "poDate" not in sync.desired_from_abm(device, [], {})
     assert sync.purchase_source(device) == "Apple Configurator, added 2026-09-22"
 
