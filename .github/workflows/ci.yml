@@ -4,6 +4,8 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The release workflow starts CI on the release PR branch. See release-please.yml.
+  workflow_dispatch:
 
 permissions:
   contents: read

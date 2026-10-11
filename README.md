@@ -125,6 +125,8 @@ mise install
 mise run check   # lint and test
 ```
 
+Releases use [release-please](https://github.com/googleapis/release-please). Write commit messages as [Conventional Commits](https://www.conventionalcommits.org) (`fix:`, `feat:`). release-please keeps a release PR open. When you merge it, it tags `vX.Y.Z`, creates the GitHub release, and moves the `vX` tag.
+
 ## Limits
 
 - This is not an Apple or Jamf product. Test it on your own data before you trust it.

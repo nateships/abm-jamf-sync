@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions: {}
+
+concurrency:
+  group: release-please
+  cancel-in-progress: false
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write      # create the release, the tag, and move the major tag
+      pull-requests: write # open and update the release PR
+      actions: write       # start CI on the release PR branch
+    steps:
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0
+        id: release
+
+      # A PR that GITHUB_TOKEN opens does not start pull_request workflows.
+      # The main ruleset requires the CI check, so start CI with workflow_dispatch.
+      - name: Start CI on the release PR
+        if: steps.release.outputs.prs_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: release-please--branches--main
+        run: gh workflow run ci.yml --repo "$GITHUB_REPOSITORY" --ref "$BRANCH"
+
+      # Callers can use the major tag, for example @v1. Move it to the new release.
+      - name: Move the major tag
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MAJOR: ${{ steps.release.outputs.major }}
+          SHA: ${{ steps.release.outputs.sha }}
+        run: |
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$MAJOR" --silent 2>/dev/null; then
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/git/refs/tags/v$MAJOR" -f sha="$SHA" -F force=true --silent
+          else
+            gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/v$MAJOR" -f sha="$SHA" --silent
+          fi
+          echo "v$MAJOR now points to $SHA"
