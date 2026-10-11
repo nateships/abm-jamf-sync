@@ -305,6 +305,16 @@ def pick_warranty_end(coverages: list[dict]) -> str | None:
     return max(ends) if ends else None
 
 
+def pick_warranty_start(coverages: list[dict]) -> str | None:
+    """Return the earliest start date of the coverages.
+
+    The Limited Warranty starts on the purchase date. Other coverage starts on or after it.
+    """
+    starts = [to_date(c.get("startDateTime")) for c in coverages]
+    starts = [s for s in starts if s]
+    return min(starts) if starts else None
+
+
 def pick_agreement(coverages: list[dict]) -> str | None:
     """Return the agreement number of the coverage that ends last and has one."""
     candidates = [c for c in coverages if not c.get("isCanceled") and c.get("agreementNumber")]
@@ -323,12 +333,31 @@ def vendor_name(device: dict, vendor_map: dict[str, str]) -> str | None:
     return None
 
 
+def purchase_source(device: dict) -> str:
+    """Return where ABM got the device, as text for people."""
+    source = device.get("purchaseSourceType")
+    if source == "APPLE":
+        return "Apple"
+    if source == "RESELLER":
+        return f"Reseller {device.get('purchaseSourceId') or '(unknown)'}"
+    if source == "MANUALLY_ADDED":
+        added = to_date(device.get("addedToOrgDateTime"))
+        return f"Apple Configurator, added {added}" if added else "Apple Configurator"
+    return str(source or "(unknown)")
+
+
 def desired_from_abm(device: dict, coverages: list[dict], vendor_map: dict[str, str]) -> dict[str, Any]:
     """Return the logical field values that ABM supplies for a device. Leave out empty values."""
+    # For a device added with Apple Configurator, orderDateTime is the date it was added, which can be
+    # years after the purchase. The warranty start date is closer to the purchase date.
+    if device.get("purchaseSourceType") == "MANUALLY_ADDED":
+        po_date = pick_warranty_start(coverages)
+    else:
+        po_date = to_date(device.get("orderDateTime"))
     values = {
         "purchased": True if device.get("purchaseSourceType") in ("APPLE", "RESELLER") else None,
         "poNumber": device.get("orderNumber") or None,
-        "poDate": to_date(device.get("orderDateTime")),
+        "poDate": po_date,
         "vendor": vendor_name(device, vendor_map),
         "warrantyDate": pick_warranty_end(coverages),
         "appleCareId": pick_agreement(coverages),
@@ -406,6 +435,8 @@ class Report:
     errors: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     no_data: list[str] = field(default_factory=list)
+    # Where the data for each serial number came from, for example "Apple" or "Reseller 101C20E0".
+    sources: dict[str, str] = field(default_factory=dict)
 
 
 def split_list(value: str) -> list[str]:
@@ -512,6 +543,7 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                 if r["serial"] not in coverage_cache:
                     coverage_cache[r["serial"]] = axm.coverage(device["id"])
                 desired = desired_from_abm(device, coverage_cache[r["serial"]], cfg.vendor_map)
+                report.sources[r["serial"]] = purchase_source(device)
                 report.counts["matched_abm"] += 1
                 uid = str(device.get("purchaseSourceId") or "")
                 if device.get("purchaseSourceType") == "RESELLER" and uid not in cfg.vendor_map \
@@ -530,6 +562,7 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                     report.counts["no_data"] += 1
                     report.no_data.append(r["serial"])
                     continue
+                report.sources[r["serial"]] = "Extension attribute"
                 report.counts["matched_ea"] += 1
             else:
                 report.counts["no_data"] += 1
@@ -543,7 +576,8 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
             report.counts["changed"] += 1
             before = {name: r["purchasing"].get(name) for name in changes}
             report.changes.append((r["serial"], r["kind"], r["id"], changes, before))
-            log(format_change("Plan" if cfg.dry_run else "Update", label, changes, before))
+            log(format_change("Plan" if cfg.dry_run else "Update", label, changes, before,
+                              report.sources.get(r["serial"], "")))
             if not cfg.dry_run:
                 if r["kind"] == "computer":
                     jamf.update_computer(r["id"], changes)
@@ -577,10 +611,10 @@ def ordered(changes: dict) -> list[str]:
     return [name for name in JAMF_LABELS if name in changes]
 
 
-def format_change(verb: str, label: str, changes: dict, before: dict) -> str:
+def format_change(verb: str, label: str, changes: dict, before: dict, source: str = "") -> str:
     """Return a log block that shows each changed field as before → after."""
     width = max(len(text) for text in FIELD_LABELS.values())
-    lines = [f"{verb} {label}"]
+    lines = [f"{verb} {label}" + (f" from {source}" if source else "")]
     for name in ordered(changes):
         lines.append(f"    {JAMF_LABELS[name]:<{width}}  {show(name, before.get(name))} → {show(name, changes[name])}")
     return "\n".join(lines)
@@ -623,8 +657,9 @@ def summary_markdown(report: Report, dry_run: bool, jamf_url: str = "") -> str:
                    if any(JAMF_LOGICAL[name] == logical for c in report.changes for name in c[3])]
         title = "Planned changes" if dry_run else "Changes written"
         lines += ["", f"### {title} ({len(report.changes)})", "",
-                  "| Serial | Jamf device | " + " | ".join(FIELD_LABELS[logical] for logical in columns) + " |",
-                  "|---|---|" + "---|" * len(columns)]
+                  "| Serial | Jamf device | Source | "
+                  + " | ".join(FIELD_LABELS[logical] for logical in columns) + " |",
+                  "|---|---|---|" + "---|" * len(columns)]
         for serial, kind, device_id, changes, before in report.changes[:500]:
             names = {JAMF_LOGICAL[name]: name for name in changes}
             values = []
@@ -636,10 +671,13 @@ def summary_markdown(report: Report, dry_run: bool, jamf_url: str = "") -> str:
                     values.append(f"**{cell(show(name, changes[name]))}**")
                 else:
                     values.append(f"{cell(show(name, before[name]))} → **{cell(show(name, changes[name]))}**")
-            lines.append(f"| `{serial}` | {device_link(jamf_url, kind, device_id)} | " + " | ".join(values) + " |")
+            source = cell(report.sources.get(serial, ""))
+            lines.append(f"| `{serial}` | {device_link(jamf_url, kind, device_id)} | {source} | "
+                         + " | ".join(values) + " |")
         if len(report.changes) > 500:
             lines += ["", f"{len(report.changes) - 500} more changes are in the job log."]
-        lines += ["", "Bold is the new value. A blank cell is a field that does not change."]
+        lines += ["", "Bold is the new value. A blank cell is a field that does not change. "
+                  "For a device added with Apple Configurator, PO Date is the warranty start date."]
 
     if report.errors:
         lines += ["", "### Errors", "", "> [!CAUTION]"] + [f"> - {cell(e)}" for e in report.errors[:100]]

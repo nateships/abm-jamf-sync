@@ -81,6 +81,21 @@ def test_desired_from_abm_leaves_out_empty_values():
     assert sync.desired_from_abm(device, [], {}) == {}
 
 
+def test_manually_added_device_uses_warranty_start_as_po_date():
+    # Apple Configurator adds a device years after purchase. orderDateTime is the date it was added.
+    device = {"purchaseSourceType": "MANUALLY_ADDED", "orderNumber": "CE-2026-09-22-06-18-59-937",
+              "orderDateTime": "2026-09-22T06:18:59Z", "addedToOrgDateTime": "2026-09-22T06:18:59Z"}
+    assert sync.desired_from_abm(device, DOC_COVERAGE, {})["poDate"] == "2025-02-02"
+    assert "poDate" not in sync.desired_from_abm(device, [], {})
+    assert sync.purchase_source(device) == "Apple Configurator, added 2026-09-22"
+
+
+def test_purchase_source():
+    assert sync.purchase_source({"purchaseSourceType": "APPLE"}) == "Apple"
+    assert sync.purchase_source({"purchaseSourceType": "RESELLER", "purchaseSourceId": "101C20E0"}) == \
+        "Reseller 101C20E0"
+
+
 def test_plan_changes_never_clears_a_field():
     purchasing = {"poNumber": "PO-1", "vendor": "Someone", "warrantyDate": "2027-01-01"}
     assert sync.plan_changes({}, purchasing, "computer", list(sync.FIELD_NAMES)) == {}
@@ -396,6 +411,8 @@ def test_summary_shows_before_and_after(servers):
     assert f"]({JAMF}/computers.html?id=1&o=r)" in text
     assert "No data from ABM or the extension attribute (1)" in text
     assert text.count("| Warranty Expiration |") == 1
+    assert "| Source |" in text
+    assert "| Reseller -2085650007946880 |" in text
 
 
 def test_change_log_is_readable():
@@ -406,6 +423,12 @@ def test_change_log_is_readable():
         "    PO Number            (empty) → PO-9",
         "    Warranty Expiration  2027-01-01 → 2028-09-08",
     ]
+
+
+def test_change_log_names_the_source():
+    block = sync.format_change("Plan", "computer 7 (SERIAL)", {"poDate": "2024-04-08"}, {},
+                               "Apple Configurator, added 2026-09-22")
+    assert block.splitlines()[0] == "Plan computer 7 (SERIAL) from Apple Configurator, added 2026-09-22"
 
 
 def test_annotation_escapes_new_lines():
