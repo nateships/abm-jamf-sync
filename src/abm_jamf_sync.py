@@ -40,10 +40,16 @@ DATE_FIELDS = {"poDate", "warrantyDate"}
 # Display names for the log and the step summary, in Jamf field name order.
 FIELD_LABELS = {
     "purchased": "Purchased", "poNumber": "PO Number", "poDate": "PO Date", "vendor": "Vendor",
-    "warrantyDate": "Warranty Expiration", "appleCareId": "AppleCare ID",
+    "warrantyDate": "Warranty Expiration", "appleCareId": "AppleCare ID", "source": "Source EA",
 }
+# The source extension attribute is not a purchasing field. The sync tracks it under this name.
+SOURCE_FIELD = "abmSource"
 JAMF_LABELS = {jamf: FIELD_LABELS[logical] for logical, names in FIELD_NAMES.items() for jamf in names}
+JAMF_LABELS[SOURCE_FIELD] = FIELD_LABELS["source"]
 JAMF_LOGICAL = {jamf: logical for logical, names in FIELD_NAMES.items() for jamf in names}
+JAMF_LOGICAL[SOURCE_FIELD] = "source"
+# Values for the source extension attribute. Use them as the options of a Pop-up Menu.
+SOURCE_VALUES = {"APPLE": "Apple", "RESELLER": "Reseller", "MANUALLY_ADDED": "Apple Configurator"}
 JAMF_DATE_FIELDS = {jamf for logical in DATE_FIELDS for jamf in FIELD_NAMES[logical]}
 COUNT_LABELS = {
     "jamf_devices": "Jamf devices", "matched_abm": "Found in ABM", "matched_ea": "From extension attribute",
@@ -265,9 +271,13 @@ class JamfClient(BearerClient):
     def mobile_devices(self) -> list[dict]:
         return self._pages("/api/v2/mobile-devices/detail", ["HARDWARE", "PURCHASING"], "mobileDeviceId:asc")
 
-    def update_computer(self, device_id: str, purchasing: dict) -> None:
-        self.request("PATCH", f"{self.base}/api/v4/computers-inventory-detail/{device_id}",
-                     {"purchasing": purchasing})
+    def update_computer(self, device_id: str, purchasing: dict, extension_attributes: list[dict] | None = None) -> None:
+        body: dict[str, Any] = {}
+        if purchasing:
+            body["purchasing"] = purchasing
+        if extension_attributes:
+            body["extensionAttributes"] = extension_attributes
+        self.request("PATCH", f"{self.base}/api/v4/computers-inventory-detail/{device_id}", body)
 
     def update_mobile_device(self, device_id: str, patch_key: str, purchasing: dict) -> None:
         self.request("PATCH", f"{self.base}/api/v2/mobile-devices/{device_id}",
@@ -369,17 +379,23 @@ def desired_from_abm(device: dict, coverages: list[dict], vendor_map: dict[str, 
 EA_SECTIONS = ("purchasing", "general", "hardware", "operatingSystem", "userAndLocation")
 
 
-def desired_from_ea(computer: dict, ea_name: str) -> dict[str, Any]:
-    """Return the warranty date from a computer extension attribute, if it has a valid date."""
+def find_ea(computer: dict, ea_name: str) -> dict | None:
+    """Return the computer extension attribute with this name, in any inventory section."""
     attributes = list(computer.get("extensionAttributes") or [])
     for section in EA_SECTIONS:
         attributes += (computer.get(section) or {}).get("extensionAttributes") or []
-    for ea in attributes:
-        if ea.get("name") == ea_name:
-            values = ea.get("values") or []
-            date = to_date(values[0]) if values else None
-            return {"warrantyDate": date} if date else {}
-    return {}
+    return next((ea for ea in attributes if ea.get("name") == ea_name), None)
+
+
+def ea_value(ea: dict | None) -> str | None:
+    values = (ea or {}).get("values") or []
+    return values[0] if values and values[0] else None
+
+
+def desired_from_ea(computer: dict, ea_name: str) -> dict[str, Any]:
+    """Return the warranty date from a computer extension attribute, if it has a valid date."""
+    date = to_date(ea_value(find_ea(computer, ea_name)))
+    return {"warrantyDate": date} if date else {}
 
 
 def plan_changes(desired: dict[str, Any], purchasing: dict, kind: str, fields: list[str]) -> dict[str, Any]:
@@ -421,6 +437,7 @@ class Config:
     device_types: list[str] = field(default_factory=lambda: ["computers"])
     vendor_map: dict[str, str] = field(default_factory=dict)
     warranty_ea_name: str = ""
+    source_ea_name: str = ""
     serials: set[str] = field(default_factory=set)
     fail_on_error: bool = True
 
@@ -487,6 +504,7 @@ def config_from_env(env: dict[str, str]) -> Config:
         device_types=device_types,
         vendor_map={str(k): str(v) for k, v in vendor_map.items()},
         warranty_ea_name=(env.get("WARRANTY_EA_NAME") or "").strip(),
+        source_ea_name=(env.get("SOURCE_EA_NAME") or "").strip(),
         serials={normalize_serial(s) for s in split_list(env.get("SERIALS", ""))},
         fail_on_error=env_bool(env.get("FAIL_ON_ERROR", ""), True),
     )
@@ -496,7 +514,7 @@ def jamf_records(jamf: JamfClient, cfg: Config) -> list[dict]:
     """Return Jamf devices as uniform records."""
     records = []
     if "computers" in cfg.device_types:
-        for c in jamf.computers(with_extension_attributes=bool(cfg.warranty_ea_name)):
+        for c in jamf.computers(with_extension_attributes=bool(cfg.warranty_ea_name or cfg.source_ea_name)):
             records.append({
                 "kind": "computer", "id": str(c["id"]), "patch_key": "",
                 "serial": normalize_serial((c.get("hardware") or {}).get("serialNumber")),
@@ -532,6 +550,7 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
     abm_devices = axm.devices()
     coverage_cache: dict[str, list[dict]] = {}
     unknown_resellers: set[str] = set()
+    missing_source_ea = False
 
     for r in records:
         label = f"{r['kind']} {r['id']} ({r['serial']})"
@@ -571,17 +590,37 @@ def run(cfg: Config, jamf: JamfClient, axm: AxmClient, log: Callable[[str], None
                 continue
 
             changes = plan_changes(desired, r["purchasing"], r["kind"], cfg.fields)
+            before = {name: r["purchasing"].get(name) for name in changes}
+
+            # The source extension attribute: Apple, Reseller, or Apple Configurator.
+            source_ea = None
+            if cfg.source_ea_name and r["kind"] == "computer" and device:
+                source_ea = find_ea(r["raw"], cfg.source_ea_name)
+                want = SOURCE_VALUES.get(device.get("purchaseSourceType", ""))
+                if source_ea is None and not missing_source_ea:
+                    missing_source_ea = True
+                    note = (f"Extension attribute \"{cfg.source_ea_name}\" is not in Jamf Pro, so the sync "
+                            "does not set it. Create a computer extension attribute with that name. Input type: "
+                            "Text Field or Pop-up Menu. Inventory Display: Purchasing.")
+                    report.notes.append(note)
+                    log(annotation("warning", "Missing extension attribute", note))
+                elif source_ea is not None and want and ea_value(source_ea) != want:
+                    changes[SOURCE_FIELD] = want
+                    before[SOURCE_FIELD] = ea_value(source_ea)
+
             if not changes:
                 report.counts["unchanged"] += 1
                 continue
             report.counts["changed"] += 1
-            before = {name: r["purchasing"].get(name) for name in changes}
             report.changes.append((r["serial"], r["kind"], r["id"], changes, before))
             log(format_change("Plan" if cfg.dry_run else "Update", label, changes, before,
                               report.sources.get(r["serial"], "")))
             if not cfg.dry_run:
                 if r["kind"] == "computer":
-                    jamf.update_computer(r["id"], changes)
+                    purchasing = {k: v for k, v in changes.items() if k != SOURCE_FIELD}
+                    attributes = [{"definitionId": str(source_ea["definitionId"]), "values": [changes[SOURCE_FIELD]]}] \
+                        if source_ea is not None and SOURCE_FIELD in changes else None
+                    jamf.update_computer(r["id"], purchasing, attributes)
                 else:
                     jamf.update_mobile_device(r["id"], r["patch_key"], changes)
         except HttpError as err:
@@ -654,7 +693,7 @@ def summary_markdown(report: Report, dry_run: bool, jamf_url: str = "") -> str:
 
     if report.changes:
         # One column for each logical field. Computers and mobile devices can use different Jamf names.
-        columns = [logical for logical in FIELD_NAMES
+        columns = [logical for logical in FIELD_LABELS
                    if any(JAMF_LOGICAL[name] == logical for c in report.changes for name in c[3])]
         title = "Planned changes" if dry_run else "Changes written"
         lines += ["", f"### {title} ({len(report.changes)})", "",

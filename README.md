@@ -67,6 +67,7 @@ The ABM API returns only the devices in your organization. For a Mac that is not
 | `device-types` | `computers` | Jamf device types to sync: `computers`, `mobile`, or `computers,mobile`. Mobile needs the mobile device privileges. |
 | `vendor-map` | `{}` | JSON that maps an ABM `purchaseSourceId` to a vendor name |
 | `warranty-ea-name` | | Computer extension attribute with a warranty date, for Macs not in ABM |
+| `source-ea-name` | | Computer extension attribute that the sync sets to where ABM got the Mac. [Source extension attribute](#source-extension-attribute) |
 | `serials` | | Only these serial numbers |
 | `fail-on-error` | `true` | Fail the step when a device update fails |
 
@@ -110,6 +111,17 @@ echo "<result>${result}</result>"
 ```
 
 Apple does not document this file. Compare the result with System Settings > General > AppleCare & Warranty on a few Macs before you rely on it.
+
+## Source extension attribute
+
+ABM gets a device from one of three sources. A device that someone added with Apple Configurator can be years old when it enters ABM. For these devices, the sync does not write PO Number or Vendor, and PO Date is the warranty start date.
+
+To see the source in Jamf Pro, create a computer extension attribute and set `source-ea-name` to its name:
+
+- **Input type:** Pop-up Menu with the options `Apple`, `Reseller`, and `Apple Configurator` (or Text Field)
+- **Inventory Display:** Purchasing
+
+The sync sets the value for each Mac that is in ABM and never clears it. You can then make a smart group, for example *ABM Source is Apple Configurator*. Mobile devices are not supported.
 
 ## Requirements
 

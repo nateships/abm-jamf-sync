@@ -37,10 +37,13 @@ inputs:
     description: Jamf device types to sync. Choose from computers, mobile.
     default: computers
   vendor-map:
-    description: JSON object that maps an ABM purchaseSourceUid to a vendor name. Apple purchases always get the vendor "Apple".
+    description: JSON object that maps an ABM purchaseSourceId (Reseller Number) to a vendor name. Apple purchases always get the vendor "Apple".
     default: "{}"
   warranty-ea-name:
     description: Optional. Name of a computer extension attribute with a warranty date. The sync uses it for computers that are not in ABM.
+    default: ""
+  source-ea-name:
+    description: "Optional. Name of a computer extension attribute (Text Field or Pop-up Menu) that the sync sets to where ABM got the computer: Apple, Reseller, or Apple Configurator."
     default: ""
   serials:
     description: Optional. Sync only these serial numbers (comma or newline separated). Use it to test on one device.
@@ -110,6 +113,7 @@ runs:
         DEVICE_TYPES: ${{ inputs.device-types }}
         VENDOR_MAP: ${{ inputs.vendor-map }}
         WARRANTY_EA_NAME: ${{ inputs.warranty-ea-name }}
+        SOURCE_EA_NAME: ${{ inputs.source-ea-name }}
         SERIALS: ${{ inputs.serials }}
         FAIL_ON_ERROR: ${{ inputs.fail-on-error }}
       run: '"$RUNNER_TEMP/abm-jamf-sync-venv/bin/python" "$GITHUB_ACTION_PATH/src/abm_jamf_sync.py"'

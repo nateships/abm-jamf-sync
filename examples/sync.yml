@@ -47,3 +47,4 @@ jobs:
           device-types: computers # add ,mobile when the Jamf API role can read and update mobile devices
           vendor-map: ${{ vars.VENDOR_MAP || '{}' }}
           warranty-ea-name: ${{ vars.WARRANTY_EA_NAME || '' }}
+          source-ea-name: ${{ vars.SOURCE_EA_NAME || '' }}

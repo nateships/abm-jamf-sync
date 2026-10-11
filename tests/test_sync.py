@@ -229,7 +229,11 @@ class FakeServers:
                 payload = json.loads(body)
                 self.patches.append(("computer", path.rsplit("/", 1)[1], payload))
                 record = next(c for c in self.computers if c["id"] == path.rsplit("/", 1)[1])
-                record["purchasing"].update(payload["purchasing"])
+                record["purchasing"].update(payload.get("purchasing", {}))
+                for update in payload.get("extensionAttributes", []):
+                    for ea in record["purchasing"].get("extensionAttributes", []):
+                        if ea.get("definitionId") == update["definitionId"]:
+                            ea["values"] = update["values"]
                 return 200, {}, b"{}"
             if method == "PATCH" and path.startswith("/api/v2/mobile-devices/"):
                 payload = json.loads(body)
@@ -342,6 +346,45 @@ def test_write_sends_patches_and_second_run_is_idempotent(servers):
     assert servers.patches == []
     assert report.counts["changed"] == 0
     assert report.counts["unchanged"] == 4
+
+
+def add_source_ea(servers):
+    for computer in servers.computers:
+        computer["purchasing"]["extensionAttributes"] = [
+            {"definitionId": "7", "name": "ABM Source", "values": []}]
+
+
+def test_source_ea_is_written_and_second_run_is_idempotent(servers):
+    add_source_ea(servers)
+    report, _ = make_run(servers, dry_run=False, source_ea_name="ABM Source")
+    bodies = {device_id: body for kind, device_id, body in servers.patches if kind == "computer"}
+    assert bodies["1"]["extensionAttributes"] == [{"definitionId": "7", "values": ["Apple"]}]
+    assert bodies["2"]["extensionAttributes"] == [{"definitionId": "7", "values": ["Reseller"]}]
+    # Computer 3 is not in ABM. The sync does not know its source.
+    assert "extensionAttributes" not in bodies["3"]
+    assert "extensionAttributes" not in bodies["1"]["purchasing"]
+    planned = {device_id: changes for _, _, device_id, changes, _ in report.changes}
+    assert planned["1"][sync.SOURCE_FIELD] == "Apple"
+
+    servers.patches.clear()
+    report, _ = make_run(servers, dry_run=False, source_ea_name="ABM Source")
+    assert servers.patches == []
+
+
+def test_source_ea_marks_configurator_devices(servers):
+    add_source_ea(servers)
+    servers.abm["C02ABM00001"].update(purchaseSourceType="MANUALLY_ADDED")
+    report, _ = make_run(servers, source_ea_name="ABM Source")
+    planned = {device_id: changes for _, _, device_id, changes, _ in report.changes}
+    assert planned["1"][sync.SOURCE_FIELD] == "Apple Configurator"
+    assert "vendor" not in planned["1"]
+    assert "| Source EA |" in sync.summary_markdown(report, dry_run=True)
+
+
+def test_missing_source_ea_is_a_note(servers):
+    report, logs = make_run(servers, source_ea_name="ABM Source")
+    assert len([line for line in logs if "Missing extension attribute" in line]) == 1
+    assert all(sync.SOURCE_FIELD not in c[3] for c in report.changes)
 
 
 def test_coverage_is_only_fetched_for_devices_in_jamf(servers):
