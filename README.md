@@ -102,7 +102,8 @@ for home in /Users/*(N/); do
   [[ -f "$file" ]] || continue
   epoch=$(/usr/bin/plutil -extract settingsCoverageSection.offer.expiration raw -o - "$file" 2>/dev/null)
   if [[ "$epoch" == <-> ]] && (( epoch > 0 )); then
-    result=$(/bin/date -r "$epoch" "+%Y-%m-%d %H:%M:%S")
+    # Use UTC. In local time, the date can move one day in time zones east of UTC.
+    result=$(/bin/date -u -r "$epoch" "+%Y-%m-%d %H:%M:%S")
     break
   fi
 done
